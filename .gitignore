@@ -1,0 +1,51 @@
+# Entorno — NUNCA al repositorio
+.env
+*.env.local
+
+# Java / Maven / Gradle
+target/
+build/
+*.class
+*.jar
+*.war
+.gradle/
+.mvn/wrapper/maven-wrapper.jar
+
+# Spring Boot
+spring-boot-*.log
+logs/
+
+# Node / Next.js
+node_modules/
+.next/
+.cache/
+dist/
+
+# Docker
+.docker/
+
+# IDE
+.idea/
+*.iml
+.vscode/settings.json
+.vscode/launch.json
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Infraestructura — datos locales
+infrastructure/traefik/certs/*.pem
+infrastructure/traefik/certs/*.crt
+infrastructure/traefik/certs/*.key
+infrastructure/traefik/acme.json
+
+# Test coverage
+coverage/
+*.lcov
+jacoco.exec
+jacoco/
+
+# Compiled assets
+*.class
+*.pyc

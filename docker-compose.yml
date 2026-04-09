@@ -1,0 +1,798 @@
+# =============================================================================
+# PORTFOLIO — Senior Java Architect
+# Stack: Java 21 + Spring Boot 3 + Kafka + RabbitMQ + PostgreSQL + Redis
+#        + Kong + OpenTelemetry + Jaeger + Prometheus + Grafana + Loki
+#        + n8n + Traefik + Portainer
+#
+# Uso local  : docker compose --profile infra up -d
+# Uso VPS    : docker compose --profile infra --profile services up -d
+# Reset demo : docker compose --profile infra down -v && docker compose --profile infra up -d
+#
+# Profiles:
+#   infra    — toda la infraestructura compartida (siempre activa)
+#   services — los microservicios Java (se construyen desde fuente)
+#   tools    — herramientas opcionales de desarrollo local
+# =============================================================================
+
+name: portfolio
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-otel-env: &otel-env
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+  OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+  OTEL_METRICS_EXPORTER: prometheus
+  OTEL_LOGS_EXPORTER: otlp
+
+networks:
+  portfolio-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  postgres-data:
+  redis-data:
+  kafka-data:
+  rabbitmq-data:
+  jaeger-data:
+  prometheus-data:
+  grafana-data:
+  loki-data:
+  n8n-data:
+  portainer-data:
+  kong-data:
+
+# =============================================================================
+# INFRAESTRUCTURA BASE
+# =============================================================================
+services:
+
+  # ---------------------------------------------------------------------------
+  # TRAEFIK — Reverse proxy con TLS automático
+  # Dashboard: http://localhost:8080
+  # ---------------------------------------------------------------------------
+  traefik:
+    image: traefik:v3.2
+    container_name: portfolio-traefik
+    profiles: [infra]
+    restart: unless-stopped
+    command:
+      - --api.dashboard=true
+      - --api.insecure=true
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.docker.network=portfolio_portfolio-net
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+      # En local usamos certificados self-signed; en VPS activar Let's Encrypt:
+      # - --certificatesresolvers.letsencrypt.acme.email=tu@email.com
+      # - --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
+      # - --certificatesresolvers.letsencrypt.acme.tlschallenge=true
+      - --log.level=INFO
+      - --accesslog=true
+      - --metrics.prometheus=true
+      - --metrics.prometheus.addEntryPointsLabels=true
+      - --metrics.prometheus.addServicesLabels=true
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080"   # Traefik dashboard
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./infrastructure/traefik/certs:/certs
+    networks:
+      - portfolio-net
+    logging: *default-logging
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.traefik.rule=Host(`traefik.localhost`)"
+      - "traefik.http.routers.traefik.service=api@internal"
+
+  # ---------------------------------------------------------------------------
+  # PORTAINER — UI gestión de contenedores
+  # URL: http://localhost:9000
+  # ---------------------------------------------------------------------------
+  portainer:
+    image: portainer/portainer-ce:2.21.4
+    container_name: portfolio-portainer
+    profiles: [infra]
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer-data:/data
+    networks:
+      - portfolio-net
+    logging: *default-logging
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.portainer.rule=Host(`portainer.localhost`)"
+      - "traefik.http.routers.portainer.entrypoints=websecure"
+      - "traefik.http.services.portainer.loadbalancer.server.port=9000"
+
+  # ---------------------------------------------------------------------------
+  # POSTGRESQL — Base de datos principal
+  # Host: localhost:5432
+  # Crea 3 databases: payments, experiments, audit
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: portfolio-postgres
+    profiles: [infra]
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-portfolio}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-portfolio_secret}
+      POSTGRES_DB: payments
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infrastructure/database/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "5432:5432"
+    networks:
+      - portfolio-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-portfolio} -d payments"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    logging: *default-logging
+
+  # ---------------------------------------------------------------------------
+  # REDIS — Cache: idempotency keys, feature flags, rate limiting
+  # Host: localhost:6379
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: portfolio-redis
+    profiles: [infra]
+    restart: unless-stopped
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD:-redis_secret}
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --appendonly yes
+    volumes:
+      - redis-data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - portfolio-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-redis_secret}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging: *default-logging
+
+  # ---------------------------------------------------------------------------
+  # KAFKA (KRaft mode — sin Zookeeper)
+  # Broker: localhost:9092
+  # ---------------------------------------------------------------------------
+  kafka:
+    image: apache/kafka:3.8.0
+    container_name: portfolio-kafka
+    profiles: [infra]
+    restart: unless-stopped
+    environment:
+      # KRaft configuration
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,PLAINTEXT_HOST://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      # Topics auto-create con configuración correcta
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_LOG_SEGMENT_BYTES: 1073741824
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qg"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    ports:
+      - "29092:29092"   # Acceso desde el host (local development)
+    networks:
+      - portfolio-net
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    logging: *default-logging
+
+  # ---------------------------------------------------------------------------
+  # KAFDROP — UI visual de Kafka
+  # URL: http://localhost:9001
+  # ---------------------------------------------------------------------------
+  kafdrop:
+    image: obsidiandynamics/kafdrop:4.0.2
+    container_name: portfolio-kafdrop
+    profiles: [infra]
+    restart: unless-stopped
+    environment:
+      KAFKA_BROKERCONNECT: kafka:9092
+      JVM_OPTS: "-Xms32M -Xmx64M"
+      SERVER_SERVLET_CONTEXTPATH: "/"
+    networks:
+      - portfolio-net
+    depends_on:
+      kafka:
+        condition: service_healthy
+    logging: *default-logging
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.kafdrop.rule=Host(`kafdrop.localhost`)"
+      - "traefik.http.routers.kafdrop.entrypoints=websecure"
+      - "traefik.http.services.kafdrop.loadbalancer.server.port=9000"
+
+  # ---------------------------------------------------------------------------
+  # RABBITMQ — Task queues: notificaciones, PDF, webhooks
+  # AMQP: localhost:5672 | Management UI: http://localhost:15672
+  # ---------------------------------------------------------------------------
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: portfolio-rabbitmq
+    profiles: [infra]
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-portfolio}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-rabbitmq_secret}
+      RABBITMQ_DEFAULT_VHOST: portfolio
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+      - ./infrastructure/messaging/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+      - ./infrastructure/messaging/definitions.json:/etc/rabbitmq/definitions.json:ro
+    ports:
+      - "5672:5672"
+      - "15672:15672"   # Management UI
+    networks:
+      - portfolio-net
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    logging: *default-logging
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.rabbitmq.rule=Host(`rabbitmq.localhost`)"
+      - "traefik.http.routers.rabbitmq.entrypoints=websecure"
+      - "traefik.http.services.rabbitmq.loadbalancer.server.port=15672"
+
+  # ---------------------------------------------------------------------------
+  # KONG — API Gateway
+  # Proxy: localhost:8000 | Admin API: localhost:8001
+  # ---------------------------------------------------------------------------
+  kong-migrations:
+    image: kong:3.8-ubuntu
+    container_name: portfolio-kong-migrations
+    profiles: [infra]
+    command: kong migrations bootstrap
+    environment:
+      KONG_DATABASE: postgres
+      KONG_PG_HOST: postgres
+      KONG_PG_PORT: 5432
+      KONG_PG_DATABASE: kong
+      KONG_PG_USER: ${POSTGRES_USER:-portfolio}
+      KONG_PG_PASSWORD: ${POSTGRES_PASSWORD:-portfolio_secret}
+    networks:
+      - portfolio-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: on-failure
+
+  kong:
+    image: kong:3.8-ubuntu
+    container_name: portfolio-kong
+    profiles: [infra]
+    restart: unless-stopped
+    environment:
+      KONG_DATABASE: postgres
+      KONG_PG_HOST: postgres
+      KONG_PG_PORT: 5432
+      KONG_PG_DATABASE: kong
+      KONG_PG_USER: ${POSTGRES_USER:-portfolio}
+      KONG_PG_PASSWORD: ${POSTGRES_PASSWORD:-portfolio_secret}
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_ADMIN_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_LISTEN: 0.0.0.0:8001
+      KONG_PROXY_LISTEN: 0.0.0.0:8000
+      KONG_PLUGINS: bundled,opentelemetry
+      KONG_OPENTELEMETRY_TRACING: all
+      KONG_OPENTELEMETRY_TRACING_SAMPLING_RATE: "1.0"
+      KONG_TRACING_INSTRUMENTATIONS: all
+    ports:
+      - "8000:8000"     # Proxy (requests entran aquí)
+      - "8001:8001"     # Admin API
+      - "8443:8443"     # Proxy HTTPS
+    networks:
+      - portfolio-net
+    depends_on:
+      kong-migrations:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    logging: *default-logging
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.kong-admin.rule=Host(`kong.localhost`)"
+      - "traefik.http.routers.kong-admin.entrypoints=websecure"
+      - "traefik.http.services.kong-admin.loadbalancer.server.port=8001"
+
+  # ---------------------------------------------------------------------------
+  # JAEGER — Distributed tracing (recibe spans OTEL via OTLP/gRPC)
+  # UI: http://localhost:16686
+  # OTLP gRPC: localhost:4317 | OTLP HTTP: localhost:4318
+  # ---------------------------------------------------------------------------
+  jaeger:
+    image: jaegertracing/all-in-one:1.62
+    container_name: portfolio-jaeger
+    profiles: [infra]
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+      SPAN_STORAGE_TYPE: badger
+      BADGER_EPHEMERAL: "false"
+      BADGER_DIRECTORY_VALUE: /badger/data
+      BADGER_DIRECTORY_KEY: /badger/key
+    volumes:
+      - jaeger-data:/badger
+    ports:
+      - "16686:16686"   # Jaeger UI
+      - "4317:4317"     # OTLP gRPC
+      - "4318:4318"     # OTLP HTTP
+      - "14268:14268"   # Jaeger HTTP collector (legacy)
+    networks:
+      - portfolio-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:16686/ || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    logging: *default-logging
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.jaeger.rule=Host(`jaeger.localhost`)"
+      - "traefik.http.routers.jaeger.entrypoints=websecure"
+      - "traefik.http.services.jaeger.loadbalancer.server.port=16686"
+
+  # ---------------------------------------------------------------------------
+  # PROMETHEUS — Métricas scraping
+  # UI: http://localhost:9090
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: portfolio-prometheus
+    profiles: [infra]
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-lifecycle
+      - --web.enable-remote-write-receiver
+    volumes:
+      - prometheus-data:/prometheus
+      - ./infrastructure/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - portfolio-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:9090/-/healthy || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+    logging: *default-logging
+
+  # ---------------------------------------------------------------------------
+  # GRAFANA — Dashboards de métricas y logs
+  # URL: http://localhost:3001 | admin / admin
+  # ---------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:11.3.2
+    container_name: portfolio-grafana
+    profiles: [infra]
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_FEATURE_TOGGLES_ENABLE: traceqlEditor
+      GF_INSTALL_PLUGINS: grafana-clock-panel,grafana-simple-json-datasource
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./infrastructure/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infrastructure/monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3001:3000"
+    networks:
+      - portfolio-net
+    depends_on:
+      - prometheus
+      - loki
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+    logging: *default-logging
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.grafana.rule=Host(`grafana.localhost`)"
+      - "traefik.http.routers.grafana.entrypoints=websecure"
+      - "traefik.http.services.grafana.loadbalancer.server.port=3000"
+
+  # ---------------------------------------------------------------------------
+  # LOKI — Log aggregation
+  # Push URL: http://localhost:3100
+  # ---------------------------------------------------------------------------
+  loki:
+    image: grafana/loki:3.3.1
+    container_name: portfolio-loki
+    profiles: [infra]
+    restart: unless-stopped
+    command: -config.file=/etc/loki/loki.yml
+    volumes:
+      - loki-data:/loki
+      - ./infrastructure/monitoring/loki.yml:/etc/loki/loki.yml:ro
+    ports:
+      - "3100:3100"
+    networks:
+      - portfolio-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3100/ready || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+    logging: *default-logging
+
+  # ---------------------------------------------------------------------------
+  # PROMTAIL — Log shipper (envía logs de Docker a Loki)
+  # ---------------------------------------------------------------------------
+  promtail:
+    image: grafana/promtail:3.3.1
+    container_name: portfolio-promtail
+    profiles: [infra]
+    restart: unless-stopped
+    command: -config.file=/etc/promtail/promtail.yml
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/log:/var/log:ro
+      - ./infrastructure/monitoring/promtail.yml:/etc/promtail/promtail.yml:ro
+    networks:
+      - portfolio-net
+    depends_on:
+      - loki
+    logging: *default-logging
+
+  # ---------------------------------------------------------------------------
+  # n8n — Workflow automation
+  # URL: http://localhost:5678
+  # Workflows: demo reset, chaos triggers, pipeline notifications, AI agents
+  # ---------------------------------------------------------------------------
+  n8n:
+    image: n8nio/n8n:1.70.3
+    container_name: portfolio-n8n
+    profiles: [infra]
+    restart: unless-stopped
+    environment:
+      N8N_HOST: n8n.localhost
+      N8N_PORT: 5678
+      N8N_PROTOCOL: http
+      WEBHOOK_URL: http://n8n.localhost/
+      GENERIC_TIMEZONE: America/New_York
+      N8N_BASIC_AUTH_ACTIVE: "true"
+      N8N_BASIC_AUTH_USER: ${N8N_USER:-admin}
+      N8N_BASIC_AUTH_PASSWORD: ${N8N_PASSWORD:-n8n_secret}
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: n8n
+      DB_POSTGRESDB_USER: ${POSTGRES_USER:-portfolio}
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD:-portfolio_secret}
+    volumes:
+      - n8n-data:/home/node/.n8n
+    networks:
+      - portfolio-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:5678/healthz || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    logging: *default-logging
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.n8n.rule=Host(`n8n.localhost`)"
+      - "traefik.http.routers.n8n.entrypoints=websecure"
+      - "traefik.http.services.n8n.loadbalancer.server.port=5678"
+
+  # =============================================================================
+  # MICROSERVICIOS JAVA
+  # Se construyen desde fuente con el profile 'services'
+  # =============================================================================
+
+  # ---------------------------------------------------------------------------
+  # PAYMENT SERVICE — Hexagonal + Circuit Breaker + Outbox Pattern + CQRS
+  # Puerto interno: 8081 | Acceso vía Kong: /api/payments
+  # ---------------------------------------------------------------------------
+  payment-service:
+    build:
+      context: ./services/payment-service
+      dockerfile: Dockerfile
+    image: portfolio/payment-service:latest
+    container_name: portfolio-payment-service
+    profiles: [services]
+    restart: unless-stopped
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: payment-service
+      OTEL_RESOURCE_ATTRIBUTES: service.version=1.0.0,deployment.environment=local
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/payments
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-portfolio}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-portfolio_secret}
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      SPRING_RABBITMQ_HOST: rabbitmq
+      SPRING_RABBITMQ_PORT: 5672
+      SPRING_RABBITMQ_USERNAME: ${RABBITMQ_USER:-portfolio}
+      SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-rabbitmq_secret}
+      SPRING_RABBITMQ_VIRTUAL_HOST: portfolio
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:-redis_secret}
+      MANAGEMENT_PROMETHEUS_METRICS_EXPORT_ENABLED: "true"
+      RESILIENCE4J_CIRCUITBREAKER_INSTANCES_FRAUD-SERVICE_SLIDINGWINDOWSIZE: "10"
+      RESILIENCE4J_CIRCUITBREAKER_INSTANCES_FRAUD-SERVICE_FAILURERATE-THRESHOLD: "50"
+      RESILIENCE4J_CIRCUITBREAKER_INSTANCES_FRAUD-SERVICE_WAITDURATIONINOPENSTATE: "10s"
+    networks:
+      - portfolio-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8081/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    logging: *default-logging
+
+  # ---------------------------------------------------------------------------
+  # FRAUD SERVICE — Bulkhead + Retry + timeout + ML scoring
+  # Puerto interno: 8082 | Acceso vía Kong: /api/fraud
+  # ---------------------------------------------------------------------------
+  fraud-service:
+    build:
+      context: ./services/fraud-service
+      dockerfile: Dockerfile
+    image: portfolio/fraud-service:latest
+    container_name: portfolio-fraud-service
+    profiles: [services]
+    restart: unless-stopped
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: fraud-service
+      OTEL_RESOURCE_ATTRIBUTES: service.version=1.0.0,deployment.environment=local
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/payments
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-portfolio}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-portfolio_secret}
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:-redis_secret}
+      MANAGEMENT_PROMETHEUS_METRICS_EXPORT_ENABLED: "true"
+      # Bulkhead: thread pool aislado para no agotar recursos del sistema
+      RESILIENCE4J_BULKHEAD_INSTANCES_SCORING-ENGINE_MAXCONCURRENTCALLS: "10"
+      RESILIENCE4J_BULKHEAD_INSTANCES_SCORING-ENGINE_MAXWAITDURATION: "500ms"
+      RESILIENCE4J_THREAD-POOL-BULKHEAD_INSTANCES_SCORING-ENGINE_MAXTHREADPOOLSIZE: "5"
+      RESILIENCE4J_THREAD-POOL-BULKHEAD_INSTANCES_SCORING-ENGINE_QUEUECAPACITY: "20"
+    networks:
+      - portfolio-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8082/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    logging: *default-logging
+
+  # ---------------------------------------------------------------------------
+  # AUDIT SERVICE — Event Sourcing + append-only log + DLQ consumer
+  # Puerto interno: 8083
+  # ---------------------------------------------------------------------------
+  audit-service:
+    build:
+      context: ./services/audit-service
+      dockerfile: Dockerfile
+    image: portfolio/audit-service:latest
+    container_name: portfolio-audit-service
+    profiles: [services]
+    restart: unless-stopped
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: audit-service
+      OTEL_RESOURCE_ATTRIBUTES: service.version=1.0.0,deployment.environment=local
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/audit
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-portfolio}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-portfolio_secret}
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      SPRING_RABBITMQ_HOST: rabbitmq
+      SPRING_RABBITMQ_PORT: 5672
+      SPRING_RABBITMQ_USERNAME: ${RABBITMQ_USER:-portfolio}
+      SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-rabbitmq_secret}
+      SPRING_RABBITMQ_VIRTUAL_HOST: portfolio
+      MANAGEMENT_PROMETHEUS_METRICS_EXPORT_ENABLED: "true"
+    networks:
+      - portfolio-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8083/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    logging: *default-logging
+
+  # ---------------------------------------------------------------------------
+  # NOTIFICATION SERVICE — RabbitMQ consumer (email, webhook tasks)
+  # Puerto interno: 8084
+  # ---------------------------------------------------------------------------
+  notification-service:
+    build:
+      context: ./services/notification-service
+      dockerfile: Dockerfile
+    image: portfolio/notification-service:latest
+    container_name: portfolio-notification-service
+    profiles: [services]
+    restart: unless-stopped
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: notification-service
+      OTEL_RESOURCE_ATTRIBUTES: service.version=1.0.0,deployment.environment=local
+      SPRING_RABBITMQ_HOST: rabbitmq
+      SPRING_RABBITMQ_PORT: 5672
+      SPRING_RABBITMQ_USERNAME: ${RABBITMQ_USER:-portfolio}
+      SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-rabbitmq_secret}
+      SPRING_RABBITMQ_VIRTUAL_HOST: portfolio
+      MANAGEMENT_PROMETHEUS_METRICS_EXPORT_ENABLED: "true"
+    networks:
+      - portfolio-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8084/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    logging: *default-logging
+
+  # ---------------------------------------------------------------------------
+  # DASHBOARD — Next.js 14 (App Router)
+  # URL: http://localhost:3000
+  # ---------------------------------------------------------------------------
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    image: portfolio/dashboard:latest
+    container_name: portfolio-dashboard
+    profiles: [services]
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_KONG_URL: http://localhost:8000
+      NEXT_PUBLIC_JAEGER_URL: http://localhost:16686
+      NEXT_PUBLIC_GRAFANA_URL: http://localhost:3001
+      NEXT_PUBLIC_KAFDROP_URL: http://localhost:9001
+      NEXT_PUBLIC_RABBITMQ_URL: http://localhost:15672
+      NEXT_PUBLIC_N8N_URL: http://localhost:5678
+      KONG_ADMIN_URL: http://kong:8001
+    networks:
+      - portfolio-net
+    depends_on:
+      - kong
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/ || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    logging: *default-logging
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.dashboard.rule=Host(`portfolio.localhost`)"
+      - "traefik.http.routers.dashboard.entrypoints=websecure"
+      - "traefik.http.services.dashboard.loadbalancer.server.port=3000"
+
+  # =============================================================================
+  # HERRAMIENTAS DE DESARROLLO LOCAL (profile: tools)
+  # =============================================================================
+
+  # pgAdmin — UI para PostgreSQL
+  pgadmin:
+    image: dpage/pgadmin4:8.13
+    container_name: portfolio-pgadmin
+    profiles: [tools]
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@portfolio.local}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+    volumes:
+      - ./infrastructure/database/pgadmin-servers.json:/pgadmin4/servers.json:ro
+    ports:
+      - "5050:80"
+    networks:
+      - portfolio-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging: *default-logging
+
+  # Redis Commander — UI para Redis
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: portfolio-redis-commander
+    profiles: [tools]
+    restart: unless-stopped
+    environment:
+      REDIS_HOSTS: "local:redis:6379:0:${REDIS_PASSWORD:-redis_secret}"
+    ports:
+      - "8082:8081"
+    networks:
+      - portfolio-net
+    depends_on:
+      - redis
+    logging: *default-logging

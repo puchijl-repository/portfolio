@@ -1,0 +1,60 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: portfolio-local
+
+scrape_configs:
+  # Prometheus se monitorea a sí mismo
+  - job_name: prometheus
+    static_configs:
+      - targets: [localhost:9090]
+
+  # Traefik métricas
+  - job_name: traefik
+    static_configs:
+      - targets: [traefik:8080]
+    metrics_path: /metrics
+
+  # Kong métricas
+  - job_name: kong
+    static_configs:
+      - targets: [kong:8001]
+    metrics_path: /metrics
+
+  # Microservicios Java — Spring Boot Actuator + Micrometer
+  # Cada servicio expone /actuator/prometheus
+  - job_name: payment-service
+    static_configs:
+      - targets: [payment-service:8081]
+    metrics_path: /actuator/prometheus
+    scrape_interval: 10s
+
+  - job_name: fraud-service
+    static_configs:
+      - targets: [fraud-service:8082]
+    metrics_path: /actuator/prometheus
+    scrape_interval: 10s
+
+  - job_name: audit-service
+    static_configs:
+      - targets: [audit-service:8083]
+    metrics_path: /actuator/prometheus
+    scrape_interval: 10s
+
+  - job_name: notification-service
+    static_configs:
+      - targets: [notification-service:8084]
+    metrics_path: /actuator/prometheus
+    scrape_interval: 10s
+
+  # Jaeger métricas internas
+  - job_name: jaeger
+    static_configs:
+      - targets: [jaeger:14269]
+    metrics_path: /metrics
+
+  # Kafka métricas (via JMX exporter si se agrega)
+  # - job_name: kafka
+  #   static_configs:
+  #     - targets: [kafka:9308]

@@ -1,0 +1,49 @@
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  # Captura logs de todos los contenedores Docker
+  # Agrega labels automáticamente desde las etiquetas del contenedor
+  - job_name: docker-containers
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 5s
+        filters:
+          - name: label
+            values: ["com.docker.compose.project=portfolio"]
+    relabel_configs:
+      # Usa el nombre del servicio de Docker Compose como label
+      - source_labels: [__meta_docker_container_label_com_docker_compose_service]
+        target_label: service
+      # Agrega el nombre del contenedor
+      - source_labels: [__meta_docker_container_name]
+        target_label: container
+        regex: "/(.*)"
+      # Agrega el profile (infra/services)
+      - source_labels: [__meta_docker_container_label_com_docker_compose_project]
+        target_label: project
+    pipeline_stages:
+      # Parsea JSON logs de Spring Boot
+      - json:
+          expressions:
+            level: level
+            traceId: traceId
+            spanId: spanId
+            service: service
+            message: message
+      # Agrega traceId como label para búsqueda rápida
+      - labels:
+          level:
+          traceId:
+          service:
+      # Parsea el timestamp del log
+      - timestamp:
+          source: timestamp
+          format: RFC3339Nano
