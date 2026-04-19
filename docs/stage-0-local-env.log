@@ -1,0 +1,61 @@
+# Stage 0 — Local Environment Verification
+Fecha: 2026-04-18 22:55
+
+### Java version
+``````
+
+### JAVA_HOME
+```C:\Program Files\Eclipse Adoptium\jdk-21.0.10.7-hotspot\
+```
+
+### Maven version
+```Apache Maven 3.9.14 (996c630dbc656c76214ce58821dcc58be960875b)
+Maven home: C:\maven\apache-maven-3.9.14
+Java version: 21.0.10, vendor: Eclipse Adoptium, runtime: C:\Program Files\Eclipse Adoptium\jdk-21.0.10.7-hotspot
+Default locale: es_US, platform encoding: UTF-8
+OS name: "windows 11", version: "10.0", arch: "amd64", family: "windows"
+```
+
+### Git version
+```git version 2.53.0.windows.2
+```
+
+### Git user.name
+```Devitsys Portfolio
+```
+
+### Git user.email
+```git@devitsys.com
+```
+
+### Docker version
+```Docker version 29.3.1, build c2be9cc
+```
+
+### Docker Compose
+```Docker Compose version v5.1.1
+```
+
+### Docker daemon running
+```29.3.1
+```
+
+### Node.js version
+```v25.9.0
+```
+
+### npm version
+```11.12.1
+```
+
+### VS Code CLI
+``````
+
+### PowerShell version
+```7.6.0
+```
+
+### Disk E: free space
+```99.7496147155762
+```
+

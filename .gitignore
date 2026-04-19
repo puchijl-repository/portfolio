@@ -1,6 +1,12 @@
+# ============================================================================
+# Portfolio — .gitignore
+# Reglas globales para Java/Maven, Node/Next.js, Docker, IDEs
+# ============================================================================
+
 # Entorno — NUNCA al repositorio
 .env
 *.env.local
+!.env.example
 
 # Java / Maven / Gradle
 target/
@@ -9,32 +15,39 @@ build/
 *.jar
 *.war
 .gradle/
-.mvn/wrapper/maven-wrapper.jar
+# NOTA: maven-wrapper.jar SÍ debe commitearse (es parte del wrapper, lo usa mvnw)
 
 # Spring Boot
 spring-boot-*.log
 logs/
+HELP.md
 
 # Node / Next.js
 node_modules/
 .next/
 .cache/
 dist/
+*.tsbuildinfo
 
 # Docker
 .docker/
 
-# IDE
-.idea/
-*.iml
+# IDE — VS Code
 .vscode/settings.json
 .vscode/launch.json
-*.swp
-*.swo
+# extensions.json SÍ se commitea (recomendaciones compartidas)
+
+# IDE — IntelliJ
+.idea/
+*.iml
+
+# OS
 .DS_Store
 Thumbs.db
+*.swp
+*.swo
 
-# Infraestructura — datos locales
+# Infraestructura — datos locales y secretos
 infrastructure/traefik/certs/*.pem
 infrastructure/traefik/certs/*.crt
 infrastructure/traefik/certs/*.key
@@ -46,6 +59,17 @@ coverage/
 jacoco.exec
 jacoco/
 
-# Compiled assets
-*.class
+# Archivos temporales / backups
+tmp/
+*.bak
+*.tmp
+
+# Python (por si acaso)
 *.pyc
+__pycache__/
+
+# Logs generales (runtime)
+*.log
+!docs/**/*.log
+# Scratch personal — no subir al repo
+comandos.txt

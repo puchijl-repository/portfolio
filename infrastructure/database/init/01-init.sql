@@ -1,41 +1,26 @@
 -- =============================================================================
 -- Portfolio — PostgreSQL initialization
--- Se ejecuta automáticamente la primera vez que levanta el contenedor
+-- Crea las bases que no existen: payments, audit, kong, n8n
+-- Instala extensiones en payments y audit
 -- =============================================================================
 
--- Base de datos para pagos y fraud (Payment + Fraud Service)
-CREATE DATABASE payments
-    WITH OWNER = portfolio
-    ENCODING = 'UTF8'
-    LC_COLLATE = 'en_US.utf8'
-    LC_CTYPE = 'en_US.utf8';
+-- La base 'payments' ya la crea Postgres via POSTGRES_DB.
+-- Creamos las otras tres condicionalmente.
 
--- Base de datos para audit log (Audit Service)
-CREATE DATABASE audit
-    WITH OWNER = portfolio
-    ENCODING = 'UTF8'
-    LC_COLLATE = 'en_US.utf8'
-    LC_CTYPE = 'en_US.utf8';
+SELECT 'CREATE DATABASE audit'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'audit')\gexec
 
--- Base de datos para Kong API Gateway
-CREATE DATABASE kong
-    WITH OWNER = portfolio
-    ENCODING = 'UTF8'
-    LC_COLLATE = 'en_US.utf8'
-    LC_CTYPE = 'en_US.utf8';
+SELECT 'CREATE DATABASE kong'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'kong')\gexec
 
--- Base de datos para n8n workflows
-CREATE DATABASE n8n
-    WITH OWNER = portfolio
-    ENCODING = 'UTF8'
-    LC_COLLATE = 'en_US.utf8'
-    LC_CTYPE = 'en_US.utf8';
+SELECT 'CREATE DATABASE n8n'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'n8n')\gexec
 
--- Extensiones necesarias en payments
-\c payments;
+-- Extensiones en payments
+\c payments
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-CREATE EXTENSION IF NOT EXISTS "pg_trgm";    -- búsqueda de texto eficiente
+CREATE EXTENSION IF NOT EXISTS "pg_trgm";
 
--- Extensiones necesarias en audit
-\c audit;
+-- Extensiones en audit
+\c audit
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";

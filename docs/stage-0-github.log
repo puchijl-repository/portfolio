@@ -1,0 +1,59 @@
+# Stage 0 - GitHub Verification
+Fecha: 2026-04-18 23:08
+
+### Directorio local E:\portfolio existe
+```True
+```
+
+### Es repositorio Git
+```True
+```
+
+### Branch actual
+```feature/payment-service
+```
+
+### Remote configurado
+```origin	https://github.com/puchijl-repository/portfolio.git (fetch)
+origin	https://github.com/puchijl-repository/portfolio.git (push)
+```
+
+### Ultimo commit
+```c01773e refactor: reorganize infrastructure into correct folder structure
+```
+
+### Estado working tree
+``` M .gitignore
+ M docker-compose.yml
+A  infrastructure/database/init/01-init.sh
+ D infrastructure/database/init/01-init.sql
+ M infrastructure/monitoring/grafana/provisioning/dashboards/dashboards.yml
+A  services/payment-service.zip
+A  services/payment-service/.gitattributes
+A  services/payment-service/.gitignore
+A  services/payment-service/.mvn/wrapper/maven-wrapper.properties
+A  services/payment-service/mvnw
+A  services/payment-service/mvnw.cmd
+A  services/payment-service/pom.xml
+A  services/payment-service/src/main/java/com/devitsys/portfolio/payment/PaymentServiceApplication.java
+A  services/payment-service/src/main/resources/application.properties
+A  services/payment-service/src/test/java/com/devitsys/portfolio/payment/PaymentServiceApplicationTests.java
+?? comandos.txt
+?? infrastructure/database/init/01-init.sql.bak
+?? services/payment-service/Dockerfile
+?? services/payment-service/src/main/java/com/devitsys/portfolio/payment/infrastructure/
+?? services/payment-service/src/main/resources/db/
+?? services/payment-service/src/test/java/com/devitsys/portfolio/payment/domain/
+```
+
+### Credential helper
+```manager
+```
+
+### Fetch desde origin (prueba de auth)
+``````
+
+### ls-remote a origin
+```c01773e9bf1feb527536d38ad2701bd51d112bba	refs/heads/main
+```
+

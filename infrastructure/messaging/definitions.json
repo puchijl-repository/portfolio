@@ -1,6 +1,23 @@
 {
+  "users": [
+    {
+      "name": "portfolio",
+      "password_hash": "2sJZ/0hLqM4H1qE1YxDwUVZT6f3yqgj6aGCqeH3gCr5e1Y/5",
+      "hashing_algorithm": "rabbit_password_hashing_sha256",
+      "tags": "administrator"
+    }
+  ],
   "vhosts": [
     { "name": "portfolio" }
+  ],
+  "permissions": [
+    {
+      "user": "portfolio",
+      "vhost": "portfolio",
+      "configure": ".*",
+      "write": ".*",
+      "read": ".*"
+    }
   ],
   "exchanges": [
     {
@@ -29,8 +46,7 @@
       "arguments": {
         "x-dead-letter-exchange": "portfolio.notifications.dlx",
         "x-dead-letter-routing-key": "email.notification.dlq",
-        "x-message-ttl": 300000,
-        "x-max-retries": 3
+        "x-message-ttl": 300000
       }
     },
     {
@@ -91,15 +107,6 @@
       "destination_type": "queue",
       "routing_key": "webhook.delivery.dlq",
       "arguments": {}
-    }
-  ],
-  "permissions": [
-    {
-      "user": "portfolio",
-      "vhost": "portfolio",
-      "configure": ".*",
-      "write": ".*",
-      "read": ".*"
     }
   ]
 }
