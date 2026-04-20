@@ -71,5 +71,12 @@ __pycache__/
 # Logs generales (runtime)
 *.log
 !docs/**/*.log
+
 # Scratch personal — no subir al repo
 comandos.txt
+
+# Backups defensivos del VPS — contienen secrets, NO subir
+docs/vps-backups/
+
+# Local backups (not versioned)
+.local-archive/

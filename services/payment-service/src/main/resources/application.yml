@@ -1,0 +1,10 @@
+spring:
+  application:
+    name: payment-service
+
+server:
+  port: 8081
+
+logging:
+  level:
+    root: INFO
